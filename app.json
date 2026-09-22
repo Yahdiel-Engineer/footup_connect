@@ -1,0 +1,43 @@
+{
+  "expo": {
+    "name": "FootUP",
+    "slug": "frontend",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "scheme": "footup",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#000000"
+    },
+    "android": {
+      "package": "com.drillergram.footup",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive_icon.png",
+        "backgroundColor": "#000000"
+      },
+      "permissions": [
+        "android.permission.RECORD_AUDIO"
+      ]
+    },
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Autorisez l'accès à vos photos."
+        }
+      ],
+      "expo-router",
+      "react-native-ble-plx",
+      "expo-web-browser"
+    ],
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "3b3aae55-8a60-44ba-8d8c-e9c25ac27682"
+      }
+    },
+    "owner": "drillergram"
+  }
+}
