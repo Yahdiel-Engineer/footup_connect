@@ -63,7 +63,7 @@ export default function SearchUsersScreen() {
     name?.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) || '?';
 
   return (
-    <SafeAreaView style={s.container} edges={['top']}>
+    <SafeAreaView style={s.container} edges={['top', 'bottom']}>
       {/* ── HEADER ── */}
       <View style={s.header}>
         <TouchableOpacity onPress={() => router.back()} style={s.backBtn}>

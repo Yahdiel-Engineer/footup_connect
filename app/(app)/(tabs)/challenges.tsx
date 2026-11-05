@@ -377,13 +377,13 @@ export default function ChallengesScreen() {
   const streak         = userStats?.streak_days || 0;
 
   if (loading) return (
-    <SafeAreaView style={s.container}>
+    <SafeAreaView style={s.container} edges={['top']}>
       <View style={s.center}><ActivityIndicator size="large" color={COLORS.primary} /></View>
     </SafeAreaView>
   );
 
   return (
-    <SafeAreaView style={s.container}>
+    <SafeAreaView style={s.container} edges={['top']}>
       <ScrollView contentContainerStyle={s.scroll} showsVerticalScrollIndicator={false}>
 
         {/* Header */}

@@ -17,9 +17,16 @@
 import React from 'react';
 import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS } from '../../../src/colors';
+import { useUnreadCount } from '../../../src/messageEvents';
 
 export default function TabLayout() {
+  // Hauteur de la barre système Android (boutons ou gestes) / indicateur iOS
+  const insets = useSafeAreaInsets();
+  const bottom = Math.max(insets.bottom, 10);
+  const unread = useUnreadCount();
+
   return (
     <Tabs
       screenOptions={{
@@ -28,8 +35,8 @@ export default function TabLayout() {
           backgroundColor: '#111111',
           borderTopColor: COLORS.border,
           borderTopWidth: 1,
-          height: 70,
-          paddingBottom: 10,
+          height: 60 + bottom,
+          paddingBottom: bottom,
           paddingTop: 8,
         },
         tabBarActiveTintColor: COLORS.primary,
@@ -74,13 +81,12 @@ export default function TabLayout() {
         name="profile"
         options={{
           title: 'PROFIL',
+          tabBarBadge: unread > 0 ? (unread > 9 ? '9+' : unread) : undefined,
+          tabBarBadgeStyle: { backgroundColor: COLORS.primary, color: '#fff', fontSize: 10, fontWeight: '800' },
           tabBarIcon: ({ color, size }) => <Ionicons name="person-outline" size={size} color={color} />,
         }}
       />
 
-      {/* ── Masqués de la barre (href: null = pas d'onglet) ── */}
-      <Tabs.Screen name="training" options={{ href: null }} />
-      <Tabs.Screen name="session"  options={{ href: null }} />
     </Tabs>
   );
 }

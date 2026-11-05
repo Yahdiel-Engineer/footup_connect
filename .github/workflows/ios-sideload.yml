@@ -1,0 +1,71 @@
+# Compile l'app iOS SANS signature sur un Mac GitHub, pour l'installer avec Sideloadly
+# (Windows + identifiant Apple gratuit). Lancement : onglet Actions > "iOS (Sideloadly)" > Run workflow.
+# Résultat : artefact "FootUp-ipa" à télécharger en bas de la page du run.
+name: iOS (Sideloadly)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ipa:
+    runs-on: macos-latest
+    timeout-minutes: 90
+    env:
+      IOS_SIDELOAD: "1"
+      # Valeurs publiques intégrées à l'app (Settings > Secrets and variables > Actions > Variables)
+      EXPO_PUBLIC_BACKEND_URL: ${{ vars.EXPO_PUBLIC_BACKEND_URL }}
+      EXPO_PUBLIC_SUPABASE_URL: ${{ vars.EXPO_PUBLIC_SUPABASE_URL }}
+      EXPO_PUBLIC_SUPABASE_KEY: ${{ vars.EXPO_PUBLIC_SUPABASE_KEY }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Vérifier les variables
+        run: |
+          for v in EXPO_PUBLIC_BACKEND_URL EXPO_PUBLIC_SUPABASE_URL EXPO_PUBLIC_SUPABASE_KEY; do
+            if [ -z "${!v}" ]; then echo "::error::Variable $v manquante (Settings > Secrets and variables > Actions > Variables)"; exit 1; fi
+          done
+          printf 'EXPO_PUBLIC_BACKEND_URL=%s\nEXPO_PUBLIC_SUPABASE_URL=%s\nEXPO_PUBLIC_SUPABASE_KEY=%s\n' \
+            "$EXPO_PUBLIC_BACKEND_URL" "$EXPO_PUBLIC_SUPABASE_URL" "$EXPO_PUBLIC_SUPABASE_KEY" > .env
+
+      - name: Choisir la version de Xcode la plus récente
+        run: |
+          ls -d /Applications/Xcode*.app
+          XCODE=$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+
+      - name: Installer les dépendances
+        run: yarn install --frozen-lockfile || yarn install
+
+      - name: Générer le projet iOS
+        run: npx expo prebuild --platform ios --clean
+
+      - name: Compiler (Release, non signé)
+        run: |
+          WS=$(ls -d ios/*.xcworkspace | head -1)
+          SCHEME=$(basename "$WS" .xcworkspace)
+          echo "Projet : $WS / schéma : $SCHEME"
+          set -o pipefail
+          xcodebuild -workspace "$WS" -scheme "$SCHEME" -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build | tail -200
+
+      - name: Empaqueter le .ipa
+        run: |
+          APP=$(ls -d build/Build/Products/Release-iphoneos/*.app | head -1)
+          mkdir -p Payload && cp -R "$APP" Payload/
+          zip -qry FootUp.ipa Payload
+          ls -lh FootUp.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FootUp-ipa
+          path: FootUp.ipa
+          retention-days: 14

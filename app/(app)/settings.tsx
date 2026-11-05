@@ -9,6 +9,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../src/authContext';
 import api from '../../src/api';
 import { COLORS } from '../../src/colors';
+import { usePreferences } from '../../src/preferences';
+import { registerPushToken, unregisterPushToken } from '../../src/usePushNotifications';
 
 type RowProps = {
   icon: string;
@@ -48,10 +50,20 @@ function Row({ icon, iconColor, label, subtitle, onPress, value, danger, last }:
 export default function SettingsScreen() {
   const router = useRouter();
   const { logout } = useAuth();
-  const [notifications, setNotifications] = useState(true);
-  const [soundEffects, setSoundEffects] = useState(true);
-  const [haptics, setHaptics] = useState(true);
-  const [publicProfile, setPublicProfile] = useState(true);
+  const { prefs, update } = usePreferences();
+  const { notifications, soundEffects, haptics, publicProfile } = prefs;
+  const setSoundEffects = (v: boolean) => update('soundEffects', v);
+  const setHaptics = (v: boolean) => update('haptics', v);
+  const setPublicProfile = (v: boolean) => update('publicProfile', v);
+  const setNotifications = async (v: boolean) => {
+    update('notifications', v);
+    try {
+      if (v) await registerPushToken();
+      else await unregisterPushToken();
+    } catch {
+      Alert.alert('Notifications', "Le réglage n'a pas pu être appliqué. Réessaie plus tard.");
+    }
+  };
 
   const handleDeleteAccount = () => {
     Alert.alert(
@@ -99,7 +111,7 @@ export default function SettingsScreen() {
   };
 
   return (
-    <SafeAreaView style={s.container} edges={['top']}>
+    <SafeAreaView style={s.container} edges={['top', 'bottom']}>
       {/* ── HEADER ── */}
       <View style={s.header}>
         <TouchableOpacity onPress={() => router.back()} style={s.backBtn}>
@@ -162,7 +174,7 @@ export default function SettingsScreen() {
           <Row
             icon="notifications-outline"
             label="Notifications push"
-            subtitle="Alertes défis et amis"
+            subtitle="Messages, groupes, défis et amis"
             value={
               <Switch
                 value={notifications}

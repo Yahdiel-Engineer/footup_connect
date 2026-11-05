@@ -6,11 +6,6 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "scheme": "footup",
-    "splash": {
-      "image": "./assets/splash.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#000000"
-    },
     "android": {
       "package": "com.drillergram.footup",
       "adaptiveIcon": {
@@ -29,8 +24,34 @@
         }
       ],
       "expo-router",
-      "react-native-ble-plx",
-      "expo-web-browser"
+      [
+        "react-native-ble-plx",
+        {
+          "isBackgroundEnabled": false,
+          "neverForLocation": true,
+          "bluetoothAlwaysPermission": "FootUp utilise le Bluetooth pour se connecter à tes cibles et recevoir tes frappes."
+        }
+      ],
+      "expo-web-browser",
+      "expo-font",
+      "expo-image",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash.png",
+          "resizeMode": "contain",
+          "backgroundColor": "#000000",
+          "imageWidth": 200
+        }
+      ],
+      "expo-status-bar",
+      [
+        "expo-notifications",
+        {
+          "color": "#FF1744",
+          "defaultChannel": "messages"
+        }
+      ]
     ],
     "extra": {
       "router": {},
@@ -38,6 +59,13 @@
         "projectId": "3b3aae55-8a60-44ba-8d8c-e9c25ac27682"
       }
     },
-    "owner": "drillergram"
+    "owner": "drillergram",
+    "ios": {
+      "bundleIdentifier": "com.drillergram.footup",
+      "supportsTablet": false,
+      "infoPlist": {
+        "NSBluetoothAlwaysUsageDescription": "FootUp utilise le Bluetooth pour se connecter à tes cibles et recevoir tes frappes."
+      }
+    }
   }
 }

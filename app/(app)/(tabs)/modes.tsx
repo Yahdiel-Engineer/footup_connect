@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { COLORS } from '../../../src/colors';
+import { getConnectedTargets } from '../../../src/bleService';
 
 type Category = 'all' | 'reaction' | 'force' | 'sequence' | 'cognitive' | 'time' | 'game';
 
@@ -44,6 +45,15 @@ const hexToRgba = (hex: string, alpha: number) => {
 export default function ModesScreen() {
   const router = useRouter();
   const [activeCategory, setActiveCategory] = useState<Category>('all');
+  const [connected, setConnected] = useState(0);
+
+  // nombre de cibles connectées, relu à chaque retour sur l'onglet
+  useFocusEffect(useCallback(() => {
+    const refresh = () => setConnected(getConnectedTargets().length);
+    refresh();
+    const id = setInterval(refresh, 3000);
+    return () => clearInterval(id);
+  }, []));
 
   const filteredModes = activeCategory === 'all'
     ? MODES
@@ -67,7 +77,7 @@ export default function ModesScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
         <Text style={styles.title}>ENTRAÎNEMENT</Text>
         <Text style={styles.subtitle}>Choisis ton mode de jeu</Text>
@@ -124,8 +134,14 @@ export default function ModesScreen() {
                 <Text style={styles.badgeText}>Niv. {mode.difficulty}</Text>
               </View>
               <View style={styles.badge}>
-                <Ionicons name="hardware-chip-outline" size={14} color={COLORS.textSecondary} />
-                <Text style={styles.badgeText}>Min. {mode.min_targets} {mode.min_targets > 1 ? 'cibles' : 'cible'}</Text>
+                <Ionicons
+                  name={connected >= mode.min_targets ? 'checkmark-circle' : 'lock-closed-outline'}
+                  size={14}
+                  color={connected >= mode.min_targets ? '#1ED760' : COLORS.textSecondary}
+                />
+                <Text style={[styles.badgeText, connected >= mode.min_targets && { color: '#1ED760' }]}>
+                  {Math.min(connected, mode.min_targets)}/{mode.min_targets} {mode.min_targets > 1 ? 'cibles' : 'cible'}
+                </Text>
               </View>
             </View>
             <View style={[styles.bottomBar, { backgroundColor: hexToRgba(mode.color, 0.5) }]} />

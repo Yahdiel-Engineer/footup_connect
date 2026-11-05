@@ -1,8 +1,13 @@
 // src/supabaseService.ts
 import { createClient } from '@supabase/supabase-js';
 
-const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://lfrqefxgfxochtqtmjgu.supabase.co';
-const SUPABASE_KEY = process.env.EXPO_PUBLIC_SUPABASE_KEY || 'sb_publishable_iLGZfxO-ZeL-58QvCmbL-Q_OORUAIyF';
+// Clé PUBLIQUE (publishable) uniquement — jamais la clé secrète dans l'app.
+const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
+const SUPABASE_KEY = process.env.EXPO_PUBLIC_SUPABASE_KEY ?? '';
+
+if (!SUPABASE_URL || !SUPABASE_KEY) {
+  throw new Error('EXPO_PUBLIC_SUPABASE_URL / EXPO_PUBLIC_SUPABASE_KEY manquants dans .env (voir .env.example)');
+}
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 

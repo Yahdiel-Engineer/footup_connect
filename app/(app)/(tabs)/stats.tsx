@@ -38,7 +38,7 @@ export default function StatsTab() {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
         <Text style={styles.title}>MES STATS</Text>
         <TouchableOpacity style={styles.leaderboardBtn} onPress={() => router.push('/leaderboard')}>
@@ -74,13 +74,19 @@ export default function StatsTab() {
             <Text style={styles.sectionTitle}>SESSIONS RÉCENTES</Text>
             {sessions && sessions.length > 0 ? (
               sessions.map((s, i) => (
-                <View key={s.session_id || i} style={styles.sessionItem}>
-                  <View>
+                <TouchableOpacity
+                  key={s.id || s.session_id || i}
+                  style={styles.sessionItem}
+                  activeOpacity={0.8}
+                  onPress={() => router.push({ pathname: '/session-detail', params: { data: JSON.stringify(s) } })}
+                >
+                  <View style={{ flex: 1 }}>
                     <Text style={styles.sessionDate}>{new Date(s.created_at).toLocaleDateString('fr-FR')}</Text>
                     <Text style={styles.sessionMode}>{(s.mode || 'libre').toUpperCase()}</Text>
                   </View>
-                  <Text style={styles.sessionScore}>{s.score || 0} PTS</Text>
-                </View>
+                  <Text style={styles.sessionScore}>{s.total_score || s.score || 0} PTS</Text>
+                  <Ionicons name="chevron-forward" size={16} color="rgba(255,255,255,0.25)" style={{ marginLeft: 8 }} />
+                </TouchableOpacity>
               ))
             ) : (
               <View style={styles.emptyContainer}>

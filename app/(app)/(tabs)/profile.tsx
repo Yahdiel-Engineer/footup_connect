@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ActivityIndicator,
-  Image, ScrollView, Dimensions
+  Image, ScrollView, Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -9,42 +9,60 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import api from '../../../src/api';
 import { COLORS } from '../../../src/colors';
+import { useAuth } from '../../../src/authContext';
+import { useUnreadCount } from '../../../src/messageEvents';
 
-const { width } = Dimensions.get('window');
+const XP_PER_LEVEL = 1000;
+const LEVEL_TITLES = ['Débutant', 'Espoir', 'Confirmé', 'Titulaire', 'Capitaine', 'Expert', 'Légende'];
+
+function levelInfo(xp: number) {
+  const level = Math.floor(xp / XP_PER_LEVEL) + 1;
+  const inLevel = xp % XP_PER_LEVEL;
+  const title = LEVEL_TITLES[Math.min(Math.floor((level - 1) / 3), LEVEL_TITLES.length - 1)];
+  return { level, inLevel, progress: inLevel / XP_PER_LEVEL, title };
+}
+
+type MenuItem = {
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  onPress: () => void;
+  badge?: number;
+  sub?: string;
+};
 
 export default function ProfileScreen() {
   const router = useRouter();
+  const { logout } = useAuth();
+  const unreadMessages = useUnreadCount();
   const [user, setUser] = useState<any>(null);
   const [stats, setStats] = useState<any>(null);
   const [friends, setFriends] = useState<any[]>([]);
   const [friendRequests, setFriendRequests] = useState<number>(0);
-  const [unreadMessages, setUnreadMessages] = useState(0);
+  const [badges, setBadges] = useState<{ earned: number; total: number }>({ earned: 0, total: 0 });
   const [loading, setLoading] = useState(true);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
 
-  useFocusEffect(
-    React.useCallback(() => { loadData(); }, [])
-  );
-
-  const loadData = async () => {
-    setLoading(true);
+  const loadData = React.useCallback(async () => {
     try {
-      const [uRes, sRes, fRes, rRes, mRes] = await Promise.all([
+      const [uRes, sRes, fRes, rRes, bRes] = await Promise.all([
         api.get('/profile').catch(() => ({ data: null })),
         api.get('/sessions/stats').catch(() => ({ data: null })),
         api.get('/friends').catch(() => ({ data: [] })),
         api.get('/friends/requests').catch(() => ({ data: [] })),
-        api.get('/messages/unread-count').catch(() => ({ data: { count: 0 } })),
+        api.get('/badges').catch(() => ({ data: [] })),
       ]);
       setUser(uRes.data);
       setStats(sRes.data);
       setFriends(fRes.data || []);
       setFriendRequests((rRes.data || []).length);
-      setUnreadMessages(mRes.data?.count || 0);
+      const all = bRes.data || [];
+      setBadges({ earned: all.filter((b: any) => b.earned).length, total: all.length });
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  useFocusEffect(React.useCallback(() => { loadData(); }, [loadData]));
 
   const pickImage = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -60,153 +78,189 @@ export default function ProfileScreen() {
           transformRequest: (data) => data,
         });
         await loadData();
-      } catch (e) { console.error('Avatar upload failed', e); }
+      } catch (e) { Alert.alert('Photo non enregistrée', 'Réessaie dans un instant.'); }
       finally { setUploadingAvatar(false); }
     }
   };
 
+  const confirmLogout = () => Alert.alert('Se déconnecter ?', '', [
+    { text: 'Annuler', style: 'cancel' },
+    { text: 'Se déconnecter', style: 'destructive', onPress: logout },
+  ]);
+
   if (loading) return <View style={s.center}><ActivityIndicator size="large" color={COLORS.primary} /></View>;
 
+  const lvl = levelInfo(Number(user?.xp) || 0);
+  const subtitle = [user?.position, user?.club].filter(Boolean).join(' · ');
+
   const statItems = [
-    { label: 'SESSIONS', value: stats?.total_sessions ?? '—', icon: 'flash' },
-    { label: 'PUISSANCE', value: stats?.avg_power ? `${Math.round(stats.avg_power)}N` : '—', icon: 'fitness' },
-    { label: 'POINTS', value: stats?.total_score ?? '0', icon: 'trophy' }, 
+    { label: 'Sessions', value: stats?.total_sessions ?? 0, icon: 'flash' as const },
+    { label: 'Puissance moy.', value: stats?.avg_power ? `${Math.round(stats.avg_power)} N` : '—', icon: 'fitness' as const },
+    { label: 'Vitesse max', value: stats?.max_speed ? `${Math.round(stats.max_speed)} km/h` : '—', icon: 'speedometer' as const },
+    { label: 'Points', value: stats?.total_score ?? 0, icon: 'trophy' as const },
+  ];
+
+  const sections: { title: string; items: MenuItem[] }[] = [
+    {
+      title: 'SOCIAL',
+      items: [
+        { icon: 'chatbubbles-outline', label: 'Messages et groupes', badge: unreadMessages, onPress: () => router.push('/chat') },
+        { icon: 'person-add-outline', label: "Demandes d'amis", badge: friendRequests, onPress: () => router.push('/friend-requests') },
+        { icon: 'podium-outline', label: 'Classement', onPress: () => router.push('/leaderboard') },
+      ],
+    },
+    {
+      title: 'MON COMPTE',
+      items: [
+        { icon: 'create-outline', label: 'Modifier le profil', sub: 'Photo, poste, club, bio', onPress: () => router.push('/edit-profile') },
+        { icon: 'bluetooth-outline', label: 'Mes cibles', sub: 'Associer et configurer les modules', onPress: () => router.push('/(app)/(tabs)') },
+        { icon: 'notifications-outline', label: 'Notifications', onPress: () => router.push('/settings') },
+        { icon: 'settings-outline', label: 'Paramètres', sub: 'Compte, sécurité, confidentialité', onPress: () => router.push('/settings') },
+      ],
+    },
   ];
 
   return (
     <SafeAreaView style={s.container} edges={['top']}>
-      <ScrollView contentContainerStyle={s.scroll} showsVerticalScrollIndicator={false}>
-
-        {/* ── HEADER ── */}
-        <View style={s.header}>
+      <ScrollView contentContainerStyle={{ paddingBottom: 32 }} showsVerticalScrollIndicator={false}>
+        {/* ── EN-TÊTE ── */}
+        <View style={s.topBar}>
           <Text style={s.title}>MON PROFIL</Text>
-          <View style={s.headerRight}>
-            {/* Demandes d'amis */}
-            <TouchableOpacity style={s.iconBtn} onPress={() => router.push('/friend-requests')}>
-              <Ionicons name="person-add-outline" size={22} color="#fff" />
+          <View style={s.topActions}>
+            <TouchableOpacity style={s.iconBtn} onPress={() => router.push('/friend-requests')} accessibilityLabel="Demandes d'amis">
+              <Ionicons name="person-add-outline" size={19} color="#fff" />
               {friendRequests > 0 && (
-                <View style={s.badge}>
-                  <Text style={s.badgeText}>{friendRequests > 9 ? '9+' : friendRequests}</Text>
-                </View>
+                <View style={s.dot}><Text style={s.dotText}>{friendRequests > 9 ? '9+' : friendRequests}</Text></View>
               )}
             </TouchableOpacity>
-            
-            {/* ✅ Messages - ouvre le chat avec les demandes intégrées */}
-            <TouchableOpacity style={s.iconBtn} onPress={() => router.push('/chat')}>
-              <Ionicons name="chatbubbles-outline" size={22} color="#fff" />
+            <TouchableOpacity style={s.iconBtn} onPress={() => router.push('/chat')} accessibilityLabel="Messages">
+              <Ionicons name="chatbubble-ellipses-outline" size={20} color="#fff" />
               {unreadMessages > 0 && (
-                <View style={s.badge}>
-                  <Text style={s.badgeText}>{unreadMessages > 9 ? '9+' : unreadMessages}</Text>
-                </View>
+                <View style={s.dot}><Text style={s.dotText}>{unreadMessages > 9 ? '9+' : unreadMessages}</Text></View>
               )}
+            </TouchableOpacity>
+            <TouchableOpacity style={s.iconBtn} onPress={() => router.push('/settings')} accessibilityLabel="Paramètres">
+              <Ionicons name="settings-outline" size={20} color="#fff" />
             </TouchableOpacity>
           </View>
         </View>
 
-        {/* ── HERO ── */}
+        {/* ── IDENTITÉ ── */}
         <View style={s.hero}>
-          <View style={s.avatarWrap}>
-            {user?.avatar_url ? (
-              <Image source={{ uri: user.avatar_url }} style={s.avatar} />
-            ) : (
-              <View style={[s.avatar, s.avatarLoading]}>
-                <Text style={s.avatarInitials}>
-                  {user?.name?.substring(0, 2).toUpperCase() || '??'}
-                </Text>
+          <TouchableOpacity onPress={pickImage} activeOpacity={0.85} style={s.avatarWrap} accessibilityLabel="Changer la photo">
+            {user?.avatar_url
+              ? <Image source={{ uri: user.avatar_url }} style={s.avatar} />
+              : <View style={[s.avatar, s.avatarEmpty]}>
+                  <Text style={s.avatarInitials}>{user?.name?.substring(0, 2).toUpperCase() || '??'}</Text>
+                </View>}
+            <View style={s.camBadge}>
+              {uploadingAvatar ? <ActivityIndicator size="small" color="#fff" /> : <Ionicons name="camera" size={13} color="#fff" />}
+            </View>
+          </TouchableOpacity>
+          <View style={{ flex: 1 }}>
+            <Text style={s.userName} numberOfLines={1}>{user?.name || 'Joueur'}</Text>
+            {!!subtitle && <Text style={s.userSub} numberOfLines={1}>{subtitle}</Text>}
+            {!!user?.region && (
+              <View style={s.regionRow}>
+                <Ionicons name="location-outline" size={12} color="rgba(255,255,255,0.4)" />
+                <Text style={s.regionTxt}>{user.region}</Text>
               </View>
             )}
           </View>
-          <Text style={s.userName}>{user?.name || 'Joueur'}</Text>
-          {user?.club ? (
-            <View style={s.clubRow}>
-              <Ionicons name="shield-half" size={12} color={COLORS.primary} />
-              <Text style={s.clubText}>{user.club}</Text>
-            </View>
-          ) : null}
-          {user?.bio ? <Text style={s.bio}>{user.bio}</Text> : null}
+        </View>
+        {!!user?.bio && <Text style={s.bio}>{user.bio}</Text>}
+
+        {/* ── NIVEAU ── */}
+        <View style={s.card}>
+          <View style={s.levelHead}>
+            <Text style={s.levelTxt}>Niveau {lvl.level} · <Text style={{ color: COLORS.primary }}>{lvl.title}</Text></Text>
+            <Text style={s.xpTxt}>{lvl.inLevel} / {XP_PER_LEVEL} XP</Text>
+          </View>
+          <View style={s.bar}><View style={[s.barFill, { width: `${Math.round(lvl.progress * 100)}%` }]} /></View>
         </View>
 
-        {/* ── STATS ── */}
-        <View style={s.statsRow}>
-          {statItems.map((item, i) => (
-            <View key={i} style={[s.statCard, i === 1 && s.statCardCenter]}>
-              <Ionicons name={item.icon as any} size={18} color={COLORS.primary} style={{ marginBottom: 8 }} />
+        {/* ── STATISTIQUES ── */}
+        <View style={s.statsGrid}>
+          {statItems.map(item => (
+            <View key={item.label} style={s.statBox}>
+              <Ionicons name={item.icon} size={16} color={COLORS.primary} />
               <Text style={s.statValue}>{item.value}</Text>
               <Text style={s.statLabel}>{item.label}</Text>
             </View>
           ))}
         </View>
 
-        {/* ── COÉQUIPIERS ── */}
-        <View style={s.section}>
-          <View style={s.sectionHeader}>
-            <Text style={s.sectionTitle}>COÉQUIPIERS</Text>
-            <TouchableOpacity onPress={() => router.push('/search-users')} style={s.addBtn}>
-              <Ionicons name="person-add" size={14} color={COLORS.primary} />
-              <Text style={s.addBtnText}>Ajouter</Text>
-            </TouchableOpacity>
+        {/* ── BADGES ── */}
+        <TouchableOpacity style={[s.card, s.badgeCard]} onPress={() => router.push('/(app)/(tabs)/challenges')} activeOpacity={0.85}>
+          <View style={s.badgeIcon}><Ionicons name="ribbon" size={20} color={COLORS.primary} /></View>
+          <View style={{ flex: 1 }}>
+            <Text style={s.rowLabel}>Badges</Text>
+            <Text style={s.rowSub}>{badges.earned} obtenu{badges.earned > 1 ? 's' : ''} sur {badges.total}</Text>
           </View>
+          <Ionicons name="chevron-forward" size={16} color="rgba(255,255,255,0.25)" />
+        </TouchableOpacity>
 
-          {friends.length === 0 ? (
-            <TouchableOpacity style={s.emptyFriends} onPress={() => router.push('/search-users')}>
-              <Ionicons name="people-outline" size={32} color="rgba(255,255,255,0.1)" />
-              <Text style={s.emptyFriendsText}>Aucun coéquipier pour l'instant</Text>
-              <Text style={s.emptyFriendsSub}>Recherche des joueurs pour les ajouter</Text>
-            </TouchableOpacity>
-          ) : (
-            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-              {friends.map((f, i) => (
-                <TouchableOpacity
-                  key={i} style={s.friendCard}
-                  onPress={() => router.push({ pathname: '/chat/[friendId]', params: { friendId: f.id, name: f.name } })}
-                >
-                  <View style={s.friendAvatarWrap}>
-                    <Image
-                      source={{ uri: f.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(f.name || 'U')}&background=1A1A1A&color=fff&size=100` }}
-                      style={s.friendAvatar}
-                    />
-                  </View>
-                  <Text style={s.friendName} numberOfLines={1}>{f.name}</Text>
-                  <Text style={s.friendSub} numberOfLines={1}>{f.position || f.club || '—'}</Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-          )}
+        {/* ── COÉQUIPIERS ── */}
+        <View style={s.sectionHead}>
+          <Text style={s.sectionTitle}>COÉQUIPIERS · {friends.length}</Text>
+          <TouchableOpacity onPress={() => router.push('/search-users')} style={s.addBtn}>
+            <Ionicons name="add" size={14} color="#fff" />
+            <Text style={s.addBtnText}>Ajouter</Text>
+          </TouchableOpacity>
         </View>
+        {friends.length === 0 ? (
+          <TouchableOpacity style={[s.card, { alignItems: 'center', gap: 4 }]} onPress={() => router.push('/search-users')}>
+            <Text style={s.rowLabel}>Aucun coéquipier pour l'instant</Text>
+            <Text style={s.rowSub}>Recherche des joueurs pour les ajouter</Text>
+          </TouchableOpacity>
+        ) : (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 16, gap: 14 }}>
+            {friends.map(f => (
+              <TouchableOpacity
+                key={f.id}
+                style={s.friend}
+                onPress={() => router.push({ pathname: '/chat/[friendId]', params: { friendId: f.id, name: f.name } })}
+              >
+                {f.avatar_url
+                  ? <Image source={{ uri: f.avatar_url }} style={s.friendAvatar} />
+                  : <View style={[s.friendAvatar, s.avatarEmpty]}><Text style={s.friendInitial}>{f.name?.charAt(0).toUpperCase()}</Text></View>}
+                <Text style={s.friendName} numberOfLines={1}>{f.name?.split(' ')[0]}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        )}
 
-        {/* ── INFOS ── */}
-        {(user?.region || user?.position || user?.age || user?.phone) && (
-          <View style={s.section}>
-            <Text style={s.sectionTitle}>INFOS</Text>
-            <View style={s.infoCard}>
-              {[
-                { icon: 'location-outline', label: 'Région', value: user?.region },
-                { icon: 'body-outline', label: 'Poste', value: user?.position },
-                { icon: 'calendar-outline', label: 'Âge', value: user?.age ? `${user.age} ans` : null },
-                { icon: 'call-outline', label: 'Téléphone', value: user?.phone },
-              ].filter(i => i.value).map((item, idx, arr) => (
-                <View key={idx} style={[s.infoRow, idx === arr.length - 1 && { borderBottomWidth: 0 }]}>
-                  <Ionicons name={item.icon as any} size={16} color={COLORS.primary} />
-                  <Text style={s.infoLabel}>{item.label}</Text>
-                  <Text style={s.infoValue}>{item.value}</Text>
-                </View>
+        {/* ── MENUS ── */}
+        {sections.map(section => (
+          <View key={section.title}>
+            <Text style={[s.sectionTitle, { marginHorizontal: 20, marginTop: 24, marginBottom: 8 }]}>{section.title}</Text>
+            <View style={s.menu}>
+              {section.items.map((item, i) => (
+                <TouchableOpacity
+                  key={item.label}
+                  style={[s.menuRow, i === section.items.length - 1 && { borderBottomWidth: 0 }]}
+                  onPress={item.onPress}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name={item.icon} size={19} color="rgba(255,255,255,0.75)" />
+                  <View style={{ flex: 1 }}>
+                    <Text style={s.rowLabel}>{item.label}</Text>
+                    {!!item.sub && <Text style={s.rowSub}>{item.sub}</Text>}
+                  </View>
+                  {!!item.badge && item.badge > 0 && (
+                    <View style={s.badge}><Text style={s.badgeText}>{item.badge > 9 ? '9+' : item.badge}</Text></View>
+                  )}
+                  <Ionicons name="chevron-forward" size={16} color="rgba(255,255,255,0.25)" />
+                </TouchableOpacity>
               ))}
             </View>
           </View>
-        )}
+        ))}
 
-        {/* ── ACTIONS ── */}
-        <TouchableOpacity style={s.actionBtn} onPress={() => router.push('/edit-profile')}>
-          <Ionicons name="create-outline" size={20} color="#fff" />
-          <Text style={s.actionBtnText}>Modifier le profil</Text>
-          <Ionicons name="chevron-forward" size={18} color="rgba(255,255,255,0.3)" />
+        <TouchableOpacity style={[s.menu, s.menuRow, s.logout]} onPress={confirmLogout}>
+          <Ionicons name="log-out-outline" size={19} color={COLORS.primary} />
+          <Text style={[s.rowLabel, { color: COLORS.primary }]}>Se déconnecter</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={[s.actionBtn, { backgroundColor: '#111' }]} onPress={() => router.push('/settings')}>
-          <Ionicons name="settings-outline" size={20} color="#fff" />
-          <Text style={s.actionBtnText}>Paramètres</Text>
-          <Ionicons name="chevron-forward" size={18} color="rgba(255,255,255,0.3)" />
-        </TouchableOpacity>
-
       </ScrollView>
     </SafeAreaView>
   );
@@ -215,45 +269,54 @@ export default function ProfileScreen() {
 const s = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.background },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: COLORS.background },
-  scroll: { padding: 20, paddingBottom: 40 },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 28 },
-  title: { color: '#fff', fontSize: 22, fontWeight: '900', letterSpacing: 1 },
-  headerRight: { flexDirection: 'row', gap: 8 },
-  iconBtn: { position: 'relative', width: 40, height: 40, justifyContent: 'center', alignItems: 'center', backgroundColor: '#1A1A1A', borderRadius: 20 },
-  badge: { position: 'absolute', top: 4, right: 4, backgroundColor: COLORS.primary, borderRadius: 8, minWidth: 16, height: 16, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 3 },
-  badgeText: { color: '#fff', fontSize: 9, fontWeight: '900' },
-  hero: { alignItems: 'center', marginBottom: 28 },
-  avatarWrap: { position: 'relative', marginBottom: 14 },
-  avatar: { width: 96, height: 96, borderRadius: 48, borderWidth: 2.5, borderColor: COLORS.primary },
-  avatarLoading: { justifyContent: 'center', alignItems: 'center', backgroundColor: '#1A1A1A' },
-  avatarInitials: { color: '#fff', fontSize: 28, fontWeight: '900' },
-  camBadge: { position: 'absolute', bottom: 2, right: 2, backgroundColor: COLORS.primary, borderRadius: 12, padding: 5, borderWidth: 2, borderColor: COLORS.background },
-  userName: { color: '#fff', fontSize: 22, fontWeight: '800', marginBottom: 6 },
-  clubRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginBottom: 8 },
-  clubText: { color: COLORS.primary, fontSize: 12, fontWeight: '700' },
-  bio: { color: 'rgba(255,255,255,0.45)', fontSize: 13, textAlign: 'center', maxWidth: width * 0.7, lineHeight: 20 },
-  statsRow: { flexDirection: 'row', gap: 10, marginBottom: 28 },
-  statCard: { flex: 1, backgroundColor: '#111', borderRadius: 16, padding: 16, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)' },
-  statCardCenter: { borderColor: COLORS.primary + '40' },
-  statValue: { color: '#fff', fontSize: 20, fontWeight: '900', marginBottom: 4 },
-  statLabel: { color: 'rgba(255,255,255,0.35)', fontSize: 9, fontWeight: '700', letterSpacing: 1 },
-  section: { marginBottom: 24 },
-  sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 },
-  sectionTitle: { color: 'rgba(255,255,255,0.35)', fontSize: 10, fontWeight: '800', letterSpacing: 2 },
-  addBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: COLORS.primary + '20', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20 },
-  addBtnText: { color: COLORS.primary, fontSize: 12, fontWeight: '700' },
-  emptyFriends: { backgroundColor: '#111', borderRadius: 16, padding: 28, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)' },
-  emptyFriendsText: { color: 'rgba(255,255,255,0.4)', fontSize: 14, fontWeight: '600', marginTop: 12 },
-  emptyFriendsSub: { color: 'rgba(255,255,255,0.2)', fontSize: 12, marginTop: 4 },
-  friendCard: { alignItems: 'center', marginRight: 18, width: 68 },
-  friendAvatarWrap: { position: 'relative' },
-  friendAvatar: { width: 58, height: 58, borderRadius: 29, backgroundColor: '#1A1A1A', borderWidth: 2, borderColor: '#1A1A1A' },
-  friendName: { color: '#fff', fontSize: 11, fontWeight: '600', marginTop: 8, textAlign: 'center' },
-  friendSub: { color: 'rgba(255,255,255,0.3)', fontSize: 10, marginTop: 2, textAlign: 'center' },
-  infoCard: { backgroundColor: '#111', borderRadius: 16, overflow: 'hidden', borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)' },
-  infoRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.05)' },
-  infoLabel: { color: 'rgba(255,255,255,0.4)', fontSize: 13, flex: 1 },
-  infoValue: { color: '#fff', fontSize: 13, fontWeight: '600' },
-  actionBtn: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: COLORS.primary, borderRadius: 14, padding: 17, marginBottom: 10 },
-  actionBtnText: { color: '#fff', fontWeight: '700', fontSize: 15, flex: 1 },
+  topBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingTop: 8, paddingBottom: 12 },
+  title: { color: '#fff', fontSize: 18, fontWeight: '900', letterSpacing: 2 },
+  iconBtn: { width: 40, height: 40, borderRadius: 12, backgroundColor: '#1A1A1A', alignItems: 'center', justifyContent: 'center' },
+  topActions: { flexDirection: 'row', gap: 8 },
+  dot: { position: 'absolute', top: -4, right: -4, minWidth: 18, height: 18, borderRadius: 9, paddingHorizontal: 4, backgroundColor: COLORS.primary, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: COLORS.background },
+  dotText: { color: '#fff', fontSize: 9, fontWeight: '900' },
+
+  hero: { flexDirection: 'row', alignItems: 'center', gap: 16, paddingHorizontal: 20, paddingVertical: 8 },
+  avatarWrap: { position: 'relative' },
+  avatar: { width: 76, height: 76, borderRadius: 38, borderWidth: 2, borderColor: COLORS.primary },
+  avatarEmpty: { backgroundColor: '#1E1E1E', alignItems: 'center', justifyContent: 'center' },
+  avatarInitials: { color: COLORS.primary, fontSize: 24, fontWeight: '900' },
+  camBadge: { position: 'absolute', bottom: 0, right: 0, width: 26, height: 26, borderRadius: 13, backgroundColor: COLORS.primary, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: COLORS.background },
+  userName: { color: '#fff', fontSize: 21, fontWeight: '900' },
+  userSub: { color: 'rgba(255,255,255,0.55)', fontSize: 13, marginTop: 3, fontWeight: '600' },
+  regionRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 },
+  regionTxt: { color: 'rgba(255,255,255,0.4)', fontSize: 12 },
+  bio: { color: 'rgba(255,255,255,0.6)', fontSize: 13, lineHeight: 19, paddingHorizontal: 20, marginTop: 6 },
+
+  card: { marginHorizontal: 16, marginTop: 14, padding: 14, borderRadius: 16, backgroundColor: '#151515', borderWidth: 0.5, borderColor: 'rgba(255,255,255,0.07)' },
+  levelHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' },
+  levelTxt: { color: '#fff', fontSize: 14, fontWeight: '800' },
+  xpTxt: { color: 'rgba(255,255,255,0.45)', fontSize: 12, fontWeight: '600' },
+  bar: { height: 7, borderRadius: 4, backgroundColor: '#262626', marginTop: 10, overflow: 'hidden' },
+  barFill: { height: 7, borderRadius: 4, backgroundColor: COLORS.primary },
+
+  statsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, paddingHorizontal: 16, marginTop: 14 },
+  statBox: { flexGrow: 1, flexBasis: '45%', padding: 12, borderRadius: 14, backgroundColor: '#151515', borderWidth: 0.5, borderColor: 'rgba(255,255,255,0.07)', gap: 4 },
+  statValue: { color: '#fff', fontSize: 19, fontWeight: '900' },
+  statLabel: { color: 'rgba(255,255,255,0.45)', fontSize: 11, fontWeight: '700' },
+
+  badgeCard: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  badgeIcon: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#222', alignItems: 'center', justifyContent: 'center' },
+
+  sectionHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginHorizontal: 20, marginTop: 24, marginBottom: 10 },
+  sectionTitle: { color: 'rgba(255,255,255,0.4)', fontSize: 11, fontWeight: '800', letterSpacing: 1.5 },
+  addBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: COLORS.primary, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 5 },
+  addBtnText: { color: '#fff', fontSize: 12, fontWeight: '800' },
+  friend: { alignItems: 'center', width: 62, gap: 6 },
+  friendAvatar: { width: 54, height: 54, borderRadius: 27 },
+  friendInitial: { color: COLORS.primary, fontWeight: '900', fontSize: 18 },
+  friendName: { color: 'rgba(255,255,255,0.7)', fontSize: 11, fontWeight: '600' },
+
+  menu: { marginHorizontal: 16, borderRadius: 16, backgroundColor: '#151515', borderWidth: 0.5, borderColor: 'rgba(255,255,255,0.07)', overflow: 'hidden' },
+  menuRow: { flexDirection: 'row', alignItems: 'center', gap: 14, paddingHorizontal: 16, paddingVertical: 14, borderBottomWidth: 0.5, borderBottomColor: 'rgba(255,255,255,0.06)' },
+  rowLabel: { color: '#fff', fontSize: 14, fontWeight: '700' },
+  rowSub: { color: 'rgba(255,255,255,0.4)', fontSize: 11, marginTop: 2 },
+  badge: { minWidth: 20, height: 20, borderRadius: 10, backgroundColor: COLORS.primary, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 5 },
+  badgeText: { color: '#fff', fontSize: 10, fontWeight: '900' },
+  logout: { marginTop: 24, borderBottomWidth: 0.5 },
 });

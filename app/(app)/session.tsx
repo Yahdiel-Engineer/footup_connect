@@ -25,6 +25,7 @@ import * as Haptics from 'expo-haptics';
 import { COLORS } from '../../src/colors';
 import api from '../../src/api';
 import { updateChallengesAfterSession } from '../../src/challengeTracker';
+import { getConnectedTargets, onImpact } from '../../src/bleService';
 
 // ─── Helpers ──────────────────────────────────────────────
 const rgba = (hex: string, a: number) => {
@@ -98,10 +99,31 @@ export default function SessionScreen() {
   const [maxCombo,  setMaxCombo]  = useState(0);
   const [lives,     setLives]     = useState(3);
   const [saving,              setSaving]              = useState(false);
+  const [savedSessionId,      setSavedSessionId]      = useState<string | null>(null);
   const [completedChallenges, setCompletedChallenges] = useState<string[]>([]);
 
-  // Simulated BLE state (remplace par ton vrai module BLE)
-  const [bleOk, setBleOk] = useState(false);
+  // ── Cibles connectées : le mode exige au moins `required` cibles ──
+  const required = Math.max(1, parseInt(p.min_targets || '1', 10) || 1);
+  const [connectedCount, setConnectedCount] = useState(() => getConnectedTargets().length);
+  const bleOk = connectedCount >= required;
+
+  useEffect(() => {
+    if (phase !== 'waiting' && phase !== 'finished') return;
+    const refresh = () => setConnectedCount(getConnectedTargets().length);
+    refresh();
+    const id = setInterval(refresh, 2000);
+    return () => clearInterval(id);
+  }, [phase]);
+
+  const startIfReady = () => {
+    const n = getConnectedTargets().length;
+    setConnectedCount(n);
+    if (n < required) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      return false;
+    }
+    return true;
+  };
 
   // ── Animations ──────────────────────────────────────────
   const scoreAnim = useRef(new Animated.Value(1)).current;
@@ -181,6 +203,12 @@ export default function SessionScreen() {
     });
   }, [phase, isCombo]);
 
+  // ── Impacts réels : chaque frappe reçue d'une cible (BLE) compte pendant la partie ──
+  useEffect(() => {
+    if (phase !== 'playing') return;
+    return onImpact(impact => registerHit(impact.acceleration, impact.timestamp));
+  }, [phase, registerHit]);
+
   // ── Vie perdue (mode Survie) ─────────────────────────────
   // Appelle quand l'ESP32 signale qu'une cible a expiré
   const lostLife = useCallback(() => {
@@ -211,7 +239,8 @@ export default function SessionScreen() {
 
     try {
       // 1. Sauvegarder la session en BDD
-      await api.post('/sessions', sessionData);
+      const res = await api.post('/sessions', sessionData);
+      setSavedSessionId(res.data?.session_id ? String(res.data.session_id) : null);
     } catch (e) {
       console.warn('Erreur sauvegarde session:', e);
     }
@@ -252,8 +281,9 @@ export default function SessionScreen() {
   const gradeCol = grade === 'S' ? '#FFD700' : grade === 'A' ? '#1ED760' : grade === 'B' ? color : 'rgba(255,255,255,0.3)';
 
   const resetReplay = () => {
+    if (!startIfReady()) return;
     setScore(0); setHits([]); setCombo(0); setMaxCombo(0); setLives(3); setTimeLeft(totalTime);
-    lastHit.current = 0; setSaving(false);
+    lastHit.current = 0; setSaving(false); setSavedSessionId(null);
     setPhase('countdown');
   };
 
@@ -306,22 +336,31 @@ export default function SessionScreen() {
         <View style={[s.bleDot, { backgroundColor: bleOk ? '#1ED760' : '#FF6D00' }]} />
         <View style={{ flex: 1 }}>
           <Text style={[s.bleTitle, { color: bleOk ? '#1ED760' : '#FF6D00' }]}>
-            {bleOk ? 'ESP32 connecté' : 'ESP32 non connecté'}
+            {connectedCount}/{required} cible{required > 1 ? 's' : ''} connectée{required > 1 ? 's' : ''}
           </Text>
           <Text style={s.bleSub}>
-            {bleOk ? 'Les impacts seront détectés automatiquement' : 'Connecte ton appareil pour enregistrer de vraies données'}
+            {bleOk
+              ? 'Les impacts seront détectés automatiquement'
+              : `Ce mode demande au moins ${required} cible${required > 1 ? 's' : ''}. Connecte-${required > 1 ? 'les' : 'la'} depuis l'accueil.`}
           </Text>
         </View>
+        {!bleOk && (
+          <TouchableOpacity style={[s.connectBtn, { borderColor: rgba(color, 0.5) }]} onPress={() => router.push('/(app)/(tabs)')}>
+            <Text style={[s.connectBtnTxt, { color }]}>Connecter</Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       {/* Bouton lancer */}
       <TouchableOpacity
-        style={[s.launchBtn, { backgroundColor: color }]}
-        onPress={() => setPhase('countdown')}
+        style={[s.launchBtn, { backgroundColor: bleOk ? color : '#222' }]}
+        onPress={() => { if (startIfReady()) setPhase('countdown'); }}
         activeOpacity={0.85}
       >
-        <Ionicons name="play" size={22} color="#fff" />
-        <Text style={s.launchBtnTxt}>LANCER</Text>
+        <Ionicons name={bleOk ? 'play' : 'lock-closed'} size={22} color={bleOk ? '#fff' : 'rgba(255,255,255,0.4)'} />
+        <Text style={[s.launchBtnTxt, !bleOk && { color: 'rgba(255,255,255,0.4)' }]}>
+          {bleOk ? 'LANCER' : `${required - connectedCount} CIBLE${required - connectedCount > 1 ? 'S' : ''} MANQUANTE${required - connectedCount > 1 ? 'S' : ''}`}
+        </Text>
       </TouchableOpacity>
     </SafeAreaView>
   );
@@ -526,6 +565,18 @@ export default function SessionScreen() {
           </View>
         )}
 
+        {/* Partager la session à un coéquipier ou un groupe */}
+        {savedSessionId && (
+          <TouchableOpacity
+            style={[s.shareBtn, { borderColor: rgba(color, 0.5) }]}
+            onPress={() => router.push({ pathname: '/share-session', params: { sessionId: savedSessionId } })}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="share-social" size={18} color={color} />
+            <Text style={[s.replayTxt, { color }]}>Partager à mes coéquipiers</Text>
+          </TouchableOpacity>
+        )}
+
         {/* Boutons */}
         <View style={s.resultBtns}>
           <TouchableOpacity style={[s.replayBtn, { borderColor: color }]} onPress={resetReplay}>
@@ -545,6 +596,9 @@ export default function SessionScreen() {
 
 // ─── Styles ───────────────────────────────────────────────
 const s = StyleSheet.create({
+  shareBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, borderWidth: 1, borderRadius: 14, paddingVertical: 14, marginBottom: 12 },
+  connectBtn: { borderWidth: 1, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 6, alignSelf: 'center' },
+  connectBtnTxt: { fontSize: 12, fontWeight: '800' },
   container: { flex: 1, backgroundColor: COLORS.background },
   center:    { justifyContent: 'center', alignItems: 'center' },
 

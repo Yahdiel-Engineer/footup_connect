@@ -7,7 +7,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, FlatList,
-  StyleSheet, KeyboardAvoidingView, Platform, ActivityIndicator,
+  StyleSheet, KeyboardAvoidingView, Pressable, Platform, ActivityIndicator,
   Image, Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -16,10 +16,16 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import api from '../../../src/api';
 import { COLORS } from '../../../src/colors';
+import { useLiveRefresh, emitMessagesChanged } from '../../../src/messageEvents';
+import { useAttachmentComposer } from '../../../src/components/AttachmentComposer';
+import * as Clipboard from 'expo-clipboard';
+import { MessageAttachment, captionOf } from '../../../src/components/MessageAttachment';
+import { MessageExtras } from '../../../src/attachments';
+
 
 type FriendStatus = 'none' | 'pending' | 'incoming' | 'accepted';
 
-interface Message {
+interface Message extends MessageExtras {
   id: string;
   sender_id: string;
   content: string;
@@ -44,7 +50,6 @@ export default function ConversationScreen() {
   const [myId, setMyId] = useState<string>('');
   const [friendInfo, setFriendInfo] = useState<any>(null);
   const [friendStatus, setFriendStatus] = useState<FriendStatus>('none');
-  const [convRequest, setConvRequest] = useState<any>(null); // ✅ NOUVEAU
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
@@ -52,31 +57,44 @@ export default function ConversationScreen() {
   const [showSessionPicker, setShowSessionPicker] = useState(false);
 
   const flatRef = useRef<FlatList>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastTypingSent = useRef(0);
+  const [friendTyping, setFriendTyping] = useState(false);
 
-  // ── Charger messages + statut ─────────────────────────
-  const loadMessages = useCallback(async () => {
+  // ── Chargement complet (profil, statut d'amitié) : à l'ouverture ──
+  const loadProfile = useCallback(async () => {
     try {
-      const [msgRes, meRes, profileRes] = await Promise.all([
-        api.get(`/messages/${friendId}`),
+      const [meRes, profileRes] = await Promise.all([
         api.get('/profile'),
         api.get(`/users/${friendId}/profile`).catch(() => ({ data: { friend_status: 'none', user: null } })),
       ]);
-
-      setMessages(msgRes.data || []);
       setMyId(String(meRes.data?.id || ''));
       setFriendInfo(profileRes.data?.user || null);
       setFriendStatus(profileRes.data?.friend_status || 'none');
-      
-      // ✅ NOUVEAU : Vérifier s'il y a une demande de conversation
-      try {
-        const convRes = await api.get(`/messages/${friendId}/status`);
-        setConvRequest(convRes.data?.conversation_request || null);
-      } catch {
-        setConvRequest(null);
-      }
+    } catch (e) {
+      console.warn('Chat profile error:', e);
+    }
+  }, [friendId]);
 
-      api.post(`/messages/${friendId}/read`).catch(() => {});
+  useEffect(() => { loadProfile(); }, [loadProfile]);
+
+  // ── Rafraîchissement léger : messages, lu/non lu, « écrit… » ──
+  const loadMessages = useCallback(async () => {
+    try {
+      const [msgRes, statusRes] = await Promise.all([
+        api.get(`/messages/${friendId}`),
+        api.get(`/messages/${friendId}/status`).catch(() => ({ data: null })),
+      ]);
+      const next: Message[] = msgRes.data || [];
+      setMessages(prev => {
+        const hasUnread = next.some(m => m.sender_id === friendId && !m.read);
+        if (hasUnread) {
+          api.post(`/messages/${friendId}/read`).then(emitMessagesChanged).catch(() => {});
+        }
+        // ne re-rendre que si quelque chose a changé (nouveau message ou passage à « lu »)
+        const sig = (l: Message[]) => l.map(m => `${m.id}:${m.read ? 1 : 0}`).join(',');
+        return sig(prev) === sig(next) ? prev : next;
+      });
+      setFriendTyping(!!statusRes.data?.friend_typing);
     } catch (e) {
       console.warn('Chat load error:', e);
     } finally {
@@ -84,46 +102,31 @@ export default function ConversationScreen() {
     }
   }, [friendId]);
 
-  useEffect(() => {
-    loadMessages();
-    pollRef.current = setInterval(loadMessages, 5000);
-    return () => clearInterval(pollRef.current!);
-  }, [loadMessages]);
+  useLiveRefresh(loadMessages, 3000);
+
+  // ── Signal « en train d'écrire » (au plus une fois toutes les 3 s) ──
+  const handleInputChange = (text: string) => {
+    setInput(text);
+    const now = Date.now();
+    if (text.trim() && friendStatus === 'accepted' && now - lastTypingSent.current > 3000) {
+      lastTypingSent.current = now;
+      api.post(`/messages/${friendId}/typing`).catch(() => {});
+    }
+  };
 
   useEffect(() => {
     if (messages.length > 0) {
       setTimeout(() => flatRef.current?.scrollToEnd({ animated: true }), 100);
     }
-  }, [messages.length]);
+  }, [messages.length, friendTyping]);
 
   // ── Envoyer un message ────────────────────────────────
   const handleSend = async () => {
     const text = input.trim();
     if (!text || sending) return;
 
-    // ✅ NOUVEAU : Si non-amis et pas de demande acceptée, on envoie une demande de conversation
-    if (friendStatus !== 'accepted' && !convRequest) {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-      setSending(true);
-      setInput('');
-      
-      try {
-        const res = await api.post(`/messages/${friendId}`, { content: text });
-        if (res.data?.type === 'conversation_request') {
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-          setConvRequest(res.data);
-          Alert.alert('Demande envoyée', 'En attente d\'acceptation pour discuter.');
-        }
-      } catch (e: any) {
-        Alert.alert('Erreur', e?.response?.data?.detail || 'Impossible d\'envoyer');
-        setInput(text);
-      } finally {
-        setSending(false);
-      }
-      return;
-    }
+    if (friendStatus !== 'accepted') return; // on n'écrit qu'à ses coéquipiers
 
-    // ✅ Si amis ou demande acceptée → message normal
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setSending(true);
     setInput('');
@@ -140,9 +143,10 @@ export default function ConversationScreen() {
     try {
       await api.post(`/messages/${friendId}`, { content: text });
       loadMessages();
-    } catch {
+    } catch (e: any) {
       setMessages(prev => prev.filter(m => m.id !== tempMsg.id));
       setInput(text);
+      Alert.alert('Message non envoyé', e?.response?.data?.detail || 'Réessaie dans un instant.');
     } finally {
       setSending(false);
     }
@@ -155,6 +159,7 @@ export default function ConversationScreen() {
     try {
       await api.post(`/friends/accept/${friendId}`);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      await loadProfile();
       loadMessages();
     } catch {
       Alert.alert('Erreur', 'Impossible d\'accepter cette demande.');
@@ -163,17 +168,42 @@ export default function ConversationScreen() {
     }
   };
 
-  // ── Accepter la demande de conversation ───────────────
-  const handleAcceptConversation = async () => {
-    if (!convRequest?.request_id) return;
+
+  // ── Pièces jointes : aperçu avant envoi ──
+  const composer = useAttachmentComposer(`/messages/${friendId}`, () => loadMessages(), friendStatus === 'accepted');
+
+  // ── Appui long sur un message : copier, supprimer ──
+  const messageMenu = (item: Message, isMe: boolean) => {
+    if (item.id.startsWith('temp_')) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    const actions: any[] = [];
+    if (item.content && (!item.kind || item.kind === 'text')) {
+      actions.push({ text: 'Copier', onPress: () => Clipboard.setStringAsync(item.content) });
+    }
+    if (isMe) {
+      actions.push({
+        text: 'Supprimer pour tout le monde', style: 'destructive',
+        onPress: async () => {
+          setMessages(prev => prev.filter(m => m.id !== item.id));
+          try { await api.delete(`/messages/item/${item.id}`); emitMessagesChanged(); }
+          catch (e: any) { Alert.alert('Suppression impossible', e?.response?.data?.detail || 'Réessaie.'); loadMessages(); }
+        },
+      });
+    }
+    if (actions.length === 0) return;
+    Alert.alert(isMe ? 'Ton message' : 'Message', undefined, [...actions, { text: 'Annuler', style: 'cancel' }]);
+  };
+
+  // ── Envoyer une demande de coéquipier ─────────────────
+  const handleAddFriend = async () => {
     setAccepting(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     try {
-      await api.post(`/conversation-requests/${convRequest.request_id}/accept`);
+      await api.post(`/friends/request/${friendId}`);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      loadMessages();
-    } catch {
-      Alert.alert('Erreur', 'Impossible d\'accepter la conversation.');
+      setFriendStatus('pending');
+    } catch (e: any) {
+      Alert.alert('Demande non envoyée', e?.response?.data?.detail || 'Réessaie dans un instant.');
     } finally {
       setAccepting(false);
     }
@@ -203,6 +233,8 @@ export default function ConversationScreen() {
   };
 
   // ── Render message ────────────────────────────────────
+  const lastMineIndex = messages.reduce((acc, m, i) => (String(m.sender_id) === String(myId) ? i : acc), -1);
+
   const renderMessage = ({ item, index }: { item: Message; index: number }) => {
     const isMe = String(item.sender_id) === String(myId);
     const prev = messages[index - 1];
@@ -224,11 +256,30 @@ export default function ConversationScreen() {
               <Text style={msgStyles.avatarInitial}>{(name || 'J').charAt(0).toUpperCase()}</Text>
             </View>
           )}
-          <View style={[msgStyles.bubble, isMe ? msgStyles.bubbleMe : msgStyles.bubbleOther]}>
-            <Text style={[msgStyles.content, isMe && msgStyles.contentMe]}>{item.content}</Text>
+          <Pressable
+            onLongPress={() => messageMenu(item, isMe)}
+            delayLongPress={300}
+            style={[msgStyles.bubble, isMe ? msgStyles.bubbleMe : msgStyles.bubbleOther]}
+          >
+            {item.kind && item.kind !== 'text' && <MessageAttachment message={item} isMe={isMe} />}
+            {!!captionOf(item.content, item.kind) && (
+              <Text style={[msgStyles.content, isMe && msgStyles.contentMe]}>{captionOf(item.content, item.kind)}</Text>
+            )}
             <Text style={[msgStyles.time, isMe && msgStyles.timeMe]}>{formatTime(item.created_at)}</Text>
-          </View>
+          </Pressable>
         </View>
+        {isMe && index === lastMineIndex && (
+          <View style={msgStyles.receipt}>
+            <Ionicons
+              name={item.read ? 'checkmark-done' : 'checkmark'}
+              size={13}
+              color={item.read ? COLORS.primary : 'rgba(255,255,255,0.35)'}
+            />
+            <Text style={[msgStyles.receiptTxt, item.read && { color: COLORS.primary }]}>
+              {item.read ? 'Lu' : 'Envoyé'}
+            </Text>
+          </View>
+        )}
       </>
     );
   };
@@ -242,7 +293,7 @@ export default function ConversationScreen() {
   const displayName = friendInfo?.name || name || 'Joueur';
   const isAccepted = friendStatus === 'accepted';
   const isIncoming = friendStatus === 'incoming';
-  const hasPendingConv = convRequest && convRequest.status === 'pending';
+  const isPending = friendStatus === 'pending';
 
   return (
     <SafeAreaView style={s.container}>
@@ -261,8 +312,8 @@ export default function ConversationScreen() {
           }
           <View>
             <Text style={s.headerName}>{displayName}</Text>
-            <Text style={[s.headerStatus, { color: isAccepted ? '#1ED760' : 'rgba(255,255,255,0.35)' }]}>
-              {isAccepted ? '● Coéquipier' : isIncoming ? '● Demande reçue' : hasPendingConv ? '● En attente' : '● Non coéquipier'}
+            <Text style={[s.headerStatus, { color: friendTyping ? COLORS.primary : isAccepted ? '#1ED760' : 'rgba(255,255,255,0.35)' }]}>
+              {friendTyping ? 'écrit…' : isAccepted ? '● Coéquipier' : isIncoming ? '● Demande reçue' : isPending ? '● Demande envoyée' : '● Non coéquipier'}
             </Text>
           </View>
         </TouchableOpacity>
@@ -272,36 +323,42 @@ export default function ConversationScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* ── Bandeau statut ── */}
+      {/* ── Bandeau : il faut être coéquipiers pour discuter ── */}
       {!isAccepted && (
-        <View style={[s.statusBanner, isIncoming ? s.statusBannerIncoming : hasPendingConv ? s.statusBannerPending : s.statusBannerNone]}>
+        <View style={[s.statusBanner, isIncoming ? s.statusBannerIncoming : isPending ? s.statusBannerPending : s.statusBannerNone]}>
           <Ionicons
-            name={isIncoming ? 'person-add-outline' : hasPendingConv ? 'time-outline' : 'information-circle-outline'}
+            name={isIncoming ? 'person-add-outline' : isPending ? 'time-outline' : 'people-outline'}
             size={16}
-            color={isIncoming ? '#1ED760' : hasPendingConv ? COLORS.primary : COLORS.primary}
+            color={isIncoming ? '#1ED760' : COLORS.primary}
           />
           <View style={{ flex: 1 }}>
             <Text style={s.statusBannerTitle}>
-              {isIncoming ? `${displayName} veut se connecter` : hasPendingConv ? 'Demande en attente' : 'Demande de message'}
+              {isIncoming ? `${displayName} veut devenir ton coéquipier` : isPending ? 'Demande de coéquipier envoyée' : "Vous n'êtes pas coéquipiers"}
             </Text>
             <Text style={s.statusBannerSub}>
               {isIncoming
-                ? 'Accepte la demande pour devenir coéquipiers.'
-                : hasPendingConv
-                ? 'Votre demande de conversation est en attente d\'acceptation.'
-                : 'Vous n\'êtes pas encore coéquipiers. Les messages apparaissent comme des demandes.'}
+                ? 'Accepte pour pouvoir discuter.'
+                : isPending
+                ? `Tu pourras écrire à ${displayName} dès que la demande sera acceptée.`
+                : 'Ajoute ce joueur comme coéquipier pour pouvoir discuter.'}
             </Text>
           </View>
-          {isIncoming && (
-            <TouchableOpacity style={s.acceptBtn} onPress={handleAcceptFriend} disabled={accepting}>
-              {accepting ? <ActivityIndicator size="small" color="#000" /> : <Text style={s.acceptBtnTxt}>Accepter</Text>}
+          {!isPending && (
+            <TouchableOpacity
+              style={s.acceptBtn}
+              onPress={isIncoming ? handleAcceptFriend : handleAddFriend}
+              disabled={accepting}
+            >
+              {accepting
+                ? <ActivityIndicator size="small" color="#000" />
+                : <Text style={s.acceptBtnTxt}>{isIncoming ? 'Accepter' : 'Ajouter'}</Text>}
             </TouchableOpacity>
           )}
         </View>
       )}
 
       {/* ── Messages ── */}
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}>
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
         <FlatList
           ref={flatRef}
           data={messages}
@@ -309,14 +366,19 @@ export default function ConversationScreen() {
           renderItem={renderMessage}
           contentContainerStyle={s.messagesList}
           showsVerticalScrollIndicator={false}
+          ListFooterComponent={friendTyping ? (
+            <View style={msgStyles.typing}>
+              <Text style={msgStyles.typingTxt}>{displayName} écrit…</Text>
+            </View>
+          ) : undefined}
           ListEmptyComponent={
             <View style={s.emptyChat}>
               <Ionicons name="chatbubble-outline" size={40} color="rgba(255,255,255,0.1)" />
               <Text style={s.emptyChatTxt}>
-                {hasPendingConv ? 'Demande envoyée...' : 'Aucun message pour l\'instant'}
+                {isAccepted ? "Aucun message pour l'instant" : 'Pas encore de conversation'}
               </Text>
               <Text style={s.emptyChatSub}>
-                {hasPendingConv ? 'En attente d\'acceptation' : 'Commence la conversation !'}
+                {isAccepted ? 'Commence la conversation !' : 'Devenez coéquipiers pour discuter'}
               </Text>
             </View>
           }
@@ -324,35 +386,33 @@ export default function ConversationScreen() {
 
         {/* ── Input ── */}
         <View style={s.inputBar}>
+          {composer.button}
           <TextInput
             style={s.input}
-            placeholder={
-              isAccepted ? 'Message…' 
-              : hasPendingConv ? 'Demande envoyée…' 
-              : 'Envoyer une demande de message…'
-            }
+            placeholder={isAccepted ? 'Message…' : 'Réservé aux coéquipiers'}
             placeholderTextColor="rgba(255,255,255,0.25)"
             value={input}
-            onChangeText={setInput}
+            onChangeText={handleInputChange}
             multiline
             maxLength={500}
             returnKeyType="send"
             onSubmitEditing={handleSend}
-            editable={!hasPendingConv} // ✅ Bloqué si demande en attente
+            editable={isAccepted}
           />
           <TouchableOpacity
-            style={[s.sendBtn, { backgroundColor: input.trim() && !hasPendingConv ? COLORS.primary : 'rgba(255,255,255,0.07)' }]}
+            style={[s.sendBtn, { backgroundColor: input.trim() && isAccepted ? COLORS.primary : 'rgba(255,255,255,0.07)' }]}
             onPress={handleSend}
-            disabled={!input.trim() || sending || hasPendingConv}
+            disabled={!input.trim() || sending || !isAccepted}
             activeOpacity={0.85}
           >
             {sending
               ? <ActivityIndicator size="small" color="#fff" />
-              : <Ionicons name="send" size={18} color={input.trim() && !hasPendingConv ? '#fff' : 'rgba(255,255,255,0.3)'} />
+              : <Ionicons name="send" size={18} color={input.trim() && isAccepted ? '#fff' : 'rgba(255,255,255,0.3)'} />
             }
           </TouchableOpacity>
         </View>
       </KeyboardAvoidingView>
+      {composer.modals}
     </SafeAreaView>
   );
 }
@@ -374,6 +434,10 @@ const msgStyles = StyleSheet.create({
   contentMe: { color: '#fff' },
   time: { fontSize: 9, color: 'rgba(255,255,255,0.3)', alignSelf: 'flex-end' },
   timeMe: { color: 'rgba(255,255,255,0.6)' },
+  receipt: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 3, paddingHorizontal: 18, marginTop: 2, marginBottom: 6 },
+  receiptTxt: { fontSize: 10, color: 'rgba(255,255,255,0.35)', fontWeight: '600' },
+  typing: { alignSelf: 'flex-start', marginLeft: 16, marginTop: 6, backgroundColor: '#1E1E1E', borderRadius: 14, paddingHorizontal: 12, paddingVertical: 7 },
+  typingTxt: { fontSize: 12, color: 'rgba(255,255,255,0.5)', fontStyle: 'italic' },
 });
 
 // ─── Styles globaux ───────────────────────────────────────

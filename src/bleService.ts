@@ -1,7 +1,7 @@
 // src/bleService.ts
 import { Platform, PermissionsAndroid, Alert } from 'react-native';
 import * as Location from 'expo-location';
-import { supabase, insertSensorData } from './supabaseService';
+import api from './api';
 
 // ─── Types ───
 export type TargetState = 'available' | 'connecting' | 'connected' | 'disconnected';
@@ -26,8 +26,33 @@ export interface BLETarget {
   };
 }
 
-// UUID de la caractéristique BLE contenant le pairing token (ESP32)
-const PAIRING_CHARACTERISTIC_UUID = '0000abcd-0000-1000-8000-00805f9b34fb';
+// ─── Identifiants Bluetooth : identiques au firmware (Documents/footup_esp32.ino) ───
+export const SERVICE_UUID      = '0000ff00-0000-1000-8000-00805f9b34fb';
+const CHAR_SENSOR_UUID         = '0000ff01-0000-1000-8000-00805f9b34fb'; // NOTIFY : impacts (JSON)
+const CHAR_LED_UUID            = '0000ff02-0000-1000-8000-00805f9b34fb'; // WRITE  : "couleur:mode:luminosité"
+const CHAR_PAIRING_UUID        = '0000abcd-0000-1000-8000-00805f9b34fb'; // READ   : jeton d'appairage
+
+/** Impact reçu d'une cible (champs envoyés par sendImpactBLE du firmware). */
+export type Impact = {
+  targetId: string;
+  acceleration: number; // g (au-dessus de 1 g de gravité)
+  force: number;        // N
+  vitesse: number;      // m/s
+  x: number; y: number; z: number;
+  timestamp: number;
+};
+
+// ─── Diffusion des impacts aux écrans (session, accueil) ───
+type ImpactListener = (impact: Impact) => void;
+const impactListeners = new Set<ImpactListener>();
+export function onImpact(listener: ImpactListener): () => void {
+  impactListeners.add(listener);
+  return () => { impactListeners.delete(listener); };
+}
+
+// base64 <-> texte (les valeurs BLE de react-native-ble-plx sont en base64)
+const toBase64 = (s: string) => btoa(unescape(encodeURIComponent(s)));
+const fromBase64 = (b: string) => decodeURIComponent(escape(atob(b)));
 
 // ─── BLE Manager ───
 let BleManager: any = null;
@@ -93,44 +118,27 @@ export async function requestBLEPermissions(): Promise<boolean> {
   }
 }
 
-// ─── Vérification du pairing token via Supabase ───
-async function verifyPairingToken(token: string): Promise<boolean> {
+// ─── Vérification du jeton d'appairage par l'API ───
+// Première connexion : la cible est enregistrée. Une cible désactivée est refusée.
+async function verifyPairingToken(token: string, name: string): Promise<'ok' | 'refused' | 'unchecked'> {
   try {
-    const { data, error } = await supabase
-      .from('targets')
-      .select('target_id, is_active')
-      .eq('pairing_token', token)
-      .eq('is_active', true)
-      .single();
-
-    if (error || !data) {
-      console.warn('Pairing token non reconnu:', token);
-      return false;
-    }
-
-    console.log('Cible vérifiée ✅:', data.target_id);
-    return true;
-  } catch (e) {
-    console.warn('Erreur vérification token:', e);
-    return false;
+    await api.post('/targets/pair', { token, name });
+    return 'ok';
+  } catch (e: any) {
+    if (e?.response?.status === 403) return 'refused';
+    // API injoignable ou table absente : on laisse tester la cible (prototype)
+    console.warn('Jeton non vérifié :', e?.response?.data?.detail || e?.message);
+    return 'unchecked';
   }
 }
 
-// ─── Lecture du token BLE d'une cible réelle ───
+// ─── Lecture du jeton d'appairage ───
 async function readPairingToken(deviceId: string): Promise<string | null> {
   try {
-    const characteristic = await BleManager.readCharacteristicForDevice(
-      deviceId,
-      '0000abcd-0000-1000-8000-00805f9b34fb', // Service UUID
-      PAIRING_CHARACTERISTIC_UUID
-    );
-    if (characteristic?.value) {
-      // Décoder base64 → string
-      return atob(characteristic.value);
-    }
-    return null;
+    const characteristic = await BleManager.readCharacteristicForDevice(deviceId, SERVICE_UUID, CHAR_PAIRING_UUID);
+    return characteristic?.value ? fromBase64(characteristic.value) : null;
   } catch (e) {
-    console.warn('Impossible de lire le token BLE:', e);
+    console.warn('Impossible de lire le jeton BLE :', e);
     return null;
   }
 }
@@ -149,17 +157,19 @@ export async function scanForTargets(
       const foundDevices = new Set<string>();
 
       BleManager.startDeviceScan(null, { allowDuplicates: false }, (error: any, device: any) => {
+        // le nom publicitaire peut être absent sur iOS : on garde alors le nom local
         if (error) {
           console.log('BLE scan error:', error);
           return;
         }
-        if (device?.name && !foundDevices.has(device.id)) {
+        const deviceName: string | undefined = device?.name || device?.localName;
+        if (deviceName && !foundDevices.has(device.id)) {
           // Filtre : nom doit contenir "footup" (insensible à la casse)
-          if (device.name.toLowerCase().includes('footup')) {
+          if (deviceName.toLowerCase().includes('footup')) {
             foundDevices.add(device.id);
             const target: BLETarget = {
               id: device.id,
-              name: device.name,
+              name: deviceName,
               rssi: device.rssi || -70,
               state: 'available',
               connected: false,
@@ -171,7 +181,9 @@ export async function scanForTargets(
               isReal: true,
               pairingVerified: false,
             };
-            onTargetFound(target);
+            const known = connectedDevices.get(device.id);
+            if (!known || known.state !== 'connected') connectedDevices.set(device.id, target);
+            onTargetFound(known?.state === 'connected' ? known : target);
           }
         }
       });
@@ -221,8 +233,8 @@ export async function connectToTarget(
         return false;
       }
 
-      const isVerified = await verifyPairingToken(token);
-      if (!isVerified) {
+      const verdict = await verifyPairingToken(token, target.name || targetId);
+      if (verdict === 'refused') {
         Alert.alert(
           'Cible non autorisée',
           'Cette cible n\'est pas enregistrée dans votre système FootUp. Connexion refusée.'
@@ -236,10 +248,8 @@ export async function connectToTarget(
       connectedDevices.set(targetId, { ...target, state: 'connected', connected: true, pairingVerified: true });
       onStateChange?.(targetId, 'connected');
 
-      // 4. Écoute les données capteur via BLE
-      if (sessionId) {
-        startRealDataMonitoring(targetId, sessionId, onDataReceived);
-      }
+      // 4. Écoute des impacts (notifications BLE) dès la connexion
+      startRealDataMonitoring(targetId, onDataReceived, onStateChange);
 
       return true;
 
@@ -265,11 +275,8 @@ export async function disconnectTarget(
   targetId: string,
   onStateChange?: (targetId: string, state: TargetState) => void
 ): Promise<void> {
-  const subscription = dataSubscriptions.get(targetId);
-  if (subscription) {
-    clearInterval(subscription);
-    dataSubscriptions.delete(targetId);
-  }
+  dataSubscriptions.get(targetId)?.remove?.();
+  dataSubscriptions.delete(targetId);
 
   if (isBLEAvailable()) {
     try { await BleManager.cancelDeviceConnection(targetId); } catch {}
@@ -285,12 +292,43 @@ export async function disconnectTarget(
 // ─── Données réelles BLE (ESP32 → caractéristique NOTIFY) ───
 function startRealDataMonitoring(
   targetId: string,
-  sessionId: string,
-  onDataReceived?: (targetId: string, data: any) => void
+  onDataReceived?: (targetId: string, data: any) => void,
+  onStateChange?: (targetId: string, state: TargetState) => void,
 ): void {
-  // À implémenter quand l'ESP32 est prêt
-  // BleManager.monitorCharacteristicForDevice(targetId, serviceUUID, charUUID, callback)
-  console.log(`Monitoring BLE data pour ${targetId} — en attente ESP32`);
+  dataSubscriptions.get(targetId)?.remove?.();
+  const sub = BleManager.monitorCharacteristicForDevice(
+    targetId, SERVICE_UUID, CHAR_SENSOR_UUID,
+    (error: any, characteristic: any) => {
+      if (error) {
+        // déconnexion de la cible (hors de portée, éteinte…)
+        console.log('Écoute BLE interrompue :', error?.message);
+        const t = connectedDevices.get(targetId);
+        if (t) connectedDevices.set(targetId, { ...t, state: 'disconnected', connected: false });
+        dataSubscriptions.delete(targetId);
+        onStateChange?.(targetId, 'disconnected');
+        return;
+      }
+      if (!characteristic?.value) return;
+      try {
+        const d = JSON.parse(fromBase64(characteristic.value));
+        const impact: Impact = {
+          targetId,
+          acceleration: Number(d.acceleration) || 0,
+          force: Number(d.force) || 0,
+          vitesse: Number(d.vitesse) || 0,
+          x: Number(d.x) || 0, y: Number(d.y) || 0, z: Number(d.z) || 0,
+          timestamp: Date.now(),
+        };
+        const t = connectedDevices.get(targetId);
+        if (t) connectedDevices.set(targetId, { ...t, lastData: { ...impact } });
+        onDataReceived?.(targetId, impact);
+        impactListeners.forEach(l => l(impact));
+      } catch (e) {
+        console.warn('Trame BLE illisible :', e);
+      }
+    },
+  );
+  dataSubscriptions.set(targetId, sub);
 }
 
 // ─── Getters ───
@@ -312,15 +350,24 @@ export async function configureLED(
   const target = connectedDevices.get(targetId);
   if (!target || target.state !== 'connected') return false;
 
-  // En mode réel : écrire dans une caractéristique BLE LED
-  // Pour l'instant : mise à jour locale uniquement
+  if (isBLEAvailable() && target.isReal) {
+    try {
+      // format attendu par LedCallbacks du firmware : "#RRGGBB:mode:0-100"
+      await BleManager.writeCharacteristicWithResponseForDevice(
+        targetId, SERVICE_UUID, CHAR_LED_UUID, toBase64(`${color}:${mode}:${Math.round(brightness)}`),
+      );
+    } catch (e) {
+      console.warn('Configuration LED non envoyée :', e);
+      return false;
+    }
+  }
   connectedDevices.set(targetId, { ...target, ledColor: color, ledMode: mode, ledBrightness: brightness });
   return true;
 }
 
 // ─── Nettoyage ───
 export function destroyBLE(): void {
-  dataSubscriptions.forEach(interval => clearInterval(interval));
+  dataSubscriptions.forEach(sub => sub?.remove?.());
   dataSubscriptions.clear();
   connectedDevices.clear();
 

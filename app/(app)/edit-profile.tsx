@@ -129,7 +129,7 @@ export default function EditProfileScreen() {
   if (loading) return <View style={s.center}><ActivityIndicator size="large" color={COLORS.primary} /></View>;
 
   return (
-    <SafeAreaView style={s.container} edges={['top']}>
+    <SafeAreaView style={s.container} edges={['top', 'bottom']}>
       <View style={s.topBar}>
         <TouchableOpacity onPress={() => router.back()} style={s.topBarBtn}>
           <Ionicons name="close" size={24} color="rgba(255,255,255,0.6)" />
@@ -140,7 +140,7 @@ export default function EditProfileScreen() {
         </TouchableOpacity>
       </View>
 
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+      <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>
         <ScrollView style={s.scroll} showsVerticalScrollIndicator={false}>
           <View style={s.avatarSection}>
             <TouchableOpacity onPress={pickImage} style={s.avatarWrap} activeOpacity={0.8}>

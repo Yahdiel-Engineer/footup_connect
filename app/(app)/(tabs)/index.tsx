@@ -145,7 +145,7 @@ export default function HomeScreen() {
   const step = scanning ? 1 : connectedCount > 0 ? 3 : targets.length > 0 ? 2 : 1;
 
   return (
-    <SafeAreaView style={s.container}>
+    <SafeAreaView style={s.container} edges={['top']}>
       <ScrollView
         contentContainerStyle={s.scroll}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.primary} />}
