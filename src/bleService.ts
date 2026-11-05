@@ -50,9 +50,10 @@ export function onImpact(listener: ImpactListener): () => void {
   return () => { impactListeners.delete(listener); };
 }
 
-// base64 <-> texte (les valeurs BLE de react-native-ble-plx sont en base64)
-const toBase64 = (s: string) => btoa(unescape(encodeURIComponent(s)));
-const fromBase64 = (b: string) => decodeURIComponent(escape(atob(b)));
+// base64 <-> texte (les valeurs BLE de react-native-ble-plx sont en base64).
+// Le firmware n'échange que de l'ASCII (jeton hexadécimal, JSON, "#RRGGBB:mode:80") : atob/btoa suffisent.
+const toBase64 = (s: string) => btoa(s);
+const fromBase64 = (b: string) => atob(b);
 
 // ─── BLE Manager ───
 let BleManager: any = null;
