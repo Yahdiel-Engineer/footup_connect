@@ -72,6 +72,7 @@ try {
 // ─── État interne ───
 const connectedDevices = new Map<string, BLETarget>();
 const dataSubscriptions = new Map<string, any>();
+const disconnectSubscriptions = new Map<string, any>();
 
 // ─── Utilitaires ───
 function rssiToSignal(rssi: number): 'Fort' | 'Moyen' | 'Faible' {
@@ -123,7 +124,7 @@ export async function requestBLEPermissions(): Promise<boolean> {
 // Première connexion : la cible est enregistrée. Une cible désactivée est refusée.
 async function verifyPairingToken(token: string, name: string): Promise<'ok' | 'refused' | 'unchecked'> {
   try {
-    await api.post('/targets/pair', { token, name });
+    await api.post('/targets/pair', { token, name }, { timeout: 20000 });
     return 'ok';
   } catch (e: any) {
     if (e?.response?.status === 403) return 'refused';
@@ -224,40 +225,57 @@ export async function connectToTarget(
       // 1. Connexion BLE
       // MTU : par défaut Android ne transporte que 20 octets par notification, or le JSON
       // d'un impact en fait ~150 → on demande 247 octets (iOS négocie seul, l'option est ignorée)
-      await BleManager.connectToDevice(targetId, { requestMTU: 247 });
+      await BleManager.connectToDevice(targetId, { requestMTU: 247, timeout: 15000 });
       await BleManager.discoverServicesForDevice(targetId);
 
-      // 2. Lire et vérifier le pairing token
+      // 2. Jeton d'appairage lu sur la cible (prouve que c'est bien un module FootUp)
       const token = await readPairingToken(targetId);
       if (!token) {
-        Alert.alert('Connexion refusée', 'Impossible de lire le token de cette cible.');
-        await BleManager.cancelDeviceConnection(targetId);
+        Alert.alert('Connexion refusée', "Impossible de lire le jeton de cette cible. Redémarre l'ESP32 et réessaie.");
+        await BleManager.cancelDeviceConnection(targetId).catch(() => {});
         onStateChange?.(targetId, 'disconnected');
         return false;
       }
 
-      const verdict = await verifyPairingToken(token, target.name || targetId);
-      if (verdict === 'refused') {
-        Alert.alert(
-          'Cible non autorisée',
-          'Cette cible n\'est pas enregistrée dans votre système FootUp. Connexion refusée.'
-        );
-        await BleManager.cancelDeviceConnection(targetId);
-        onStateChange?.(targetId, 'disconnected');
-        return false;
-      }
-
-      // 3. Token valide → connexion acceptée
-      connectedDevices.set(targetId, { ...target, state: 'connected', connected: true, pairingVerified: true });
+      // 3. Cible connectée tout de suite (sans attendre l'API, qui peut être en veille sur Render)
+      connectedDevices.set(targetId, { ...target, state: 'connected', connected: true, pairingVerified: false });
       onStateChange?.(targetId, 'connected');
 
-      // 4. Écoute des impacts (notifications BLE) dès la connexion
-      startRealDataMonitoring(targetId, onDataReceived, onStateChange);
+      // 4. Vraie déconnexion (cible éteinte, hors de portée…)
+      disconnectSubscriptions.get(targetId)?.remove?.();
+      disconnectSubscriptions.set(targetId, BleManager.onDeviceDisconnected(targetId, () => {
+        dataSubscriptions.get(targetId)?.remove?.();
+        dataSubscriptions.delete(targetId);
+        disconnectSubscriptions.get(targetId)?.remove?.();
+        disconnectSubscriptions.delete(targetId);
+        const t = connectedDevices.get(targetId);
+        if (t) connectedDevices.set(targetId, { ...t, state: 'disconnected', connected: false });
+        onStateChange?.(targetId, 'disconnected');
+      }));
+
+      // 5. Écoute des impacts (notifications BLE)
+      startRealDataMonitoring(targetId, onDataReceived);
+
+      // 6. Vérification du jeton par l'API, en arrière-plan : seule une cible refusée est déconnectée
+      verifyPairingToken(token, target.name || targetId).then(async verdict => {
+        if (verdict === 'refused') {
+          Alert.alert('Cible non autorisée', "Cette cible est désactivée dans le système FootUp.");
+          await disconnectTarget(targetId, onStateChange);
+        } else if (verdict === 'ok') {
+          const t = connectedDevices.get(targetId);
+          if (t) connectedDevices.set(targetId, { ...t, pairingVerified: true });
+        }
+      });
 
       return true;
 
-    } catch (e) {
+    } catch (e: any) {
       console.log('Connexion BLE échouée:', e);
+      await BleManager.cancelDeviceConnection(targetId).catch(() => {});
+      Alert.alert(
+        'Connexion impossible',
+        `${e?.message || e}\n\nVérifie que la cible n'est pas déjà connectée à un autre téléphone ou à nRF Connect, puis réessaie.`,
+      );
       onStateChange?.(targetId, 'disconnected');
       return false;
     }
@@ -280,6 +298,8 @@ export async function disconnectTarget(
 ): Promise<void> {
   dataSubscriptions.get(targetId)?.remove?.();
   dataSubscriptions.delete(targetId);
+  disconnectSubscriptions.get(targetId)?.remove?.();
+  disconnectSubscriptions.delete(targetId);
 
   if (isBLEAvailable()) {
     try { await BleManager.cancelDeviceConnection(targetId); } catch {}
@@ -296,19 +316,14 @@ export async function disconnectTarget(
 function startRealDataMonitoring(
   targetId: string,
   onDataReceived?: (targetId: string, data: any) => void,
-  onStateChange?: (targetId: string, state: TargetState) => void,
 ): void {
   dataSubscriptions.get(targetId)?.remove?.();
   const sub = BleManager.monitorCharacteristicForDevice(
     targetId, SERVICE_UUID, CHAR_SENSOR_UUID,
     (error: any, characteristic: any) => {
       if (error) {
-        // déconnexion de la cible (hors de portée, éteinte…)
-        console.log('Écoute BLE interrompue :', error?.message);
-        const t = connectedDevices.get(targetId);
-        if (t) connectedDevices.set(targetId, { ...t, state: 'disconnected', connected: false });
-        dataSubscriptions.delete(targetId);
-        onStateChange?.(targetId, 'disconnected');
+        // la déconnexion réelle est suivie par onDeviceDisconnected ; ici on journalise seulement
+        console.log('Écoute des impacts interrompue :', error?.message);
         return;
       }
       if (!characteristic?.value) return;
@@ -372,6 +387,8 @@ export async function configureLED(
 export function destroyBLE(): void {
   dataSubscriptions.forEach(sub => sub?.remove?.());
   dataSubscriptions.clear();
+  disconnectSubscriptions.forEach(sub => sub?.remove?.());
+  disconnectSubscriptions.clear();
   connectedDevices.clear();
 
   if (BleManager) {
