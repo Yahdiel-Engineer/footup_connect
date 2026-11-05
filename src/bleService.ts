@@ -222,7 +222,9 @@ export async function connectToTarget(
   if (isBLEAvailable() && target.isReal) {
     try {
       // 1. Connexion BLE
-      await BleManager.connectToDevice(targetId);
+      // MTU : par défaut Android ne transporte que 20 octets par notification, or le JSON
+      // d'un impact en fait ~150 → on demande 247 octets (iOS négocie seul, l'option est ignorée)
+      await BleManager.connectToDevice(targetId, { requestMTU: 247 });
       await BleManager.discoverServicesForDevice(targetId);
 
       // 2. Lire et vérifier le pairing token
