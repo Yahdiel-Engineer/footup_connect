@@ -1,8 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, ScrollView,
-  ActivityIndicator, Animated, RefreshControl
-} from 'react-native';
+  ActivityIndicator, Animated, RefreshControl, Alert } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -98,9 +97,16 @@ export default function HomeScreen() {
     if (!target) return;
 
     if (target.connected) {
-      await disconnectTarget(targetId, (id, state) => {
-        setTargets(prev => prev.map(t => t.id === id ? { ...t, state, connected: false } : t));
-      });
+      // Déconnecter = libérer la cible pour un autre joueur (elle se remet à émettre)
+      Alert.alert(`Déconnecter ${target.name} ?`, "La cible sera libérée et pourra être utilisée par quelqu'un d'autre.", [
+        { text: 'Annuler', style: 'cancel' },
+        { text: 'Déconnecter', style: 'destructive', onPress: async () => {
+          await disconnectTarget(targetId, (id, state) => {
+            setTargets(prev => prev.map(t => t.id === id ? { ...t, state, connected: false } : t));
+          });
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        } },
+      ]);
       return;
     }
 
@@ -305,8 +311,9 @@ export default function HomeScreen() {
                       <View style={[s.ledDot, { backgroundColor: target.ledColor }]} />
                       <Ionicons name="bulb-outline" size={14} color="rgba(255,255,255,0.5)" />
                     </TouchableOpacity>
-                    <TouchableOpacity style={s.connectedBtn} onPress={() => handleConnect(target.id)} activeOpacity={0.8}>
-                      <Text style={s.connectedBtnText}>Connecté</Text>
+                    <TouchableOpacity style={s.disconnectBtn} onPress={() => handleConnect(target.id)} activeOpacity={0.8} accessibilityLabel="Déconnecter la cible">
+                      <Ionicons name="close-circle-outline" size={14} color="#FF5252" />
+                      <Text style={s.disconnectBtnText}>Déconnecter</Text>
                     </TouchableOpacity>
                   </View>
                 </View>
@@ -479,6 +486,8 @@ const s = StyleSheet.create({
   targetActions:      { flexDirection: 'row', alignItems: 'center', gap: 8 },
   ledIconBtn:         { flexDirection: 'row', alignItems: 'center', gap: 4, padding: 6 },
   ledDot:             { width: 8, height: 8, borderRadius: 4 },
+  disconnectBtn:      { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: 'rgba(255,82,82,0.1)', borderWidth: 0.5, borderColor: 'rgba(255,82,82,0.35)', borderRadius: 20, paddingHorizontal: 12, paddingVertical: 8 },
+  disconnectBtnText:  { color: '#FF5252', fontSize: 12, fontWeight: '800' },
   connectedBtn:       { backgroundColor: 'rgba(30,215,96,0.1)', borderWidth: 0.5, borderColor: 'rgba(30,215,96,0.3)', borderRadius: 20, paddingHorizontal: 14, paddingVertical: 8 },
   connectedBtnText:   { fontSize: 12, fontWeight: '700', color: '#1ED760' },
   connectBtn:         { backgroundColor: COLORS.primary, borderRadius: 20, paddingHorizontal: 16, paddingVertical: 9 },
