@@ -226,7 +226,7 @@ export async function connectToTarget(
       // MTU : par défaut Android ne transporte que 20 octets par notification, or le JSON
       // d'un impact en fait ~150 → on demande 247 octets (iOS négocie seul, l'option est ignorée)
       await BleManager.connectToDevice(targetId, { requestMTU: 247, timeout: 15000 });
-      await BleManager.discoverServicesForDevice(targetId);
+      await BleManager.discoverAllServicesAndCharacteristicsForDevice(targetId);
 
       // 2. Jeton d'appairage lu sur la cible (prouve que c'est bien un module FootUp)
       const token = await readPairingToken(targetId);
