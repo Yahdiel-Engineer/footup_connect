@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, ScrollView,
   ActivityIndicator, Animated, RefreshControl, Alert } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -12,6 +12,7 @@ import {
   isBLEAvailable, requestBLEPermissions, configureLED
 } from '../../../src/bleService';
 import { COLORS } from '../../../src/colors';
+import api from '../../../src/api';
 
 const LED_COLORS = ['#FF1744', '#00E676', '#448AFF', '#FFD600', '#E040FB', '#FFFFFF'];
 const LED_MODES  = ['static', 'blink', 'pulse', 'off'];
@@ -40,7 +41,9 @@ export default function HomeScreen() {
   const ringAnim  = useRef(new Animated.Value(0)).current;
   const bleAvailable = isBLEAvailable();
 
-  useEffect(() => { loadUser(); checkPermissions(); }, []);
+  useEffect(() => { checkPermissions(); }, []);
+  // relu à chaque retour sur l'accueil (ex. nom modifié dans le profil)
+  useFocusEffect(useCallback(() => { loadUser(); }, []));
 
   useEffect(() => {
     if (scanning) {
@@ -62,10 +65,18 @@ export default function HomeScreen() {
     }
   }, [scanning]);
 
+  // Nom affiché : copie locale tout de suite, puis profil à jour depuis l'API
   const loadUser = async () => {
     try {
       const s = await AsyncStorage.getItem('user');
       if (s) setUser(JSON.parse(s));
+    } catch {}
+    try {
+      const { data } = await api.get('/profile');
+      if (data) {
+        setUser(data);
+        AsyncStorage.setItem('user', JSON.stringify(data)).catch(() => {});
+      }
     } catch {}
   };
 
@@ -168,7 +179,9 @@ export default function HomeScreen() {
               <Text style={s.logoText}>FOOT'UP</Text>
               <Text style={s.logoSub}>CONNECT</Text>
             </View>
-            <Text style={s.greeting}>Bonjour {user?.name || 'Joueur'}</Text>
+            <Text style={s.greeting} numberOfLines={1}>
+              Bonjour {user?.name?.trim() || user?.email?.split('@')[0] || 'Joueur'}
+            </Text>
           </View>
           <View style={s.headerRight}>
             <View style={[s.bleBadge, { backgroundColor: bleAvailable ? 'rgba(30,215,96,0.08)' : 'rgba(255,183,0,0.08)', borderColor: bleAvailable ? 'rgba(30,215,96,0.2)' : 'rgba(255,183,0,0.2)' }]}>

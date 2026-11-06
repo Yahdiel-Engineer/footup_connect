@@ -126,6 +126,7 @@ const bc = StyleSheet.create({
   rarityTxt:    { fontSize: 9, fontWeight: '700' },
   xpRow:        { flexDirection: 'row', alignItems: 'center', gap: 3 },
   xpTxt:        { fontSize: 9, color: '#FFD600', fontWeight: '700' },
+  checkBadge:   { position: 'absolute', top: 6, right: 6, width: 16, height: 16, borderRadius: 8, backgroundColor: '#1ED760', alignItems: 'center', justifyContent: 'center', zIndex: 1 },
 });
 
 // ─── Carte défi ───────────────────────────────────────────

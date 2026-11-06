@@ -90,34 +90,46 @@ export function isRealMode(): boolean {
 }
 
 // ─── Permissions ───
+// iOS : la demande Bluetooth est faite par le système au premier scan (texte dans app.json).
+// Android 12+ : BLUETOOTH_SCAN / BLUETOOTH_CONNECT. Android < 12 : la localisation est exigée pour scanner.
 export async function requestBLEPermissions(): Promise<boolean> {
   try {
-    if (Platform.OS === 'web') return true;
+    if (Platform.OS !== 'android') return true;
+
+    if (Platform.Version >= 31) {
+      const res = await PermissionsAndroid.requestMultiple([
+        PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
+        PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
+      ]);
+      const ok = Object.values(res).every(r => r === PermissionsAndroid.RESULTS.GRANTED);
+      if (!ok) Alert.alert('Permission Bluetooth requise', 'Autorise le Bluetooth (appareils à proximité) pour trouver les cibles.');
+      return ok;
+    }
 
     const { status } = await Location.requestForegroundPermissionsAsync();
     if (status !== 'granted') {
-      Alert.alert(
-        'Permission requise',
-        'La localisation est nécessaire pour scanner les appareils Bluetooth.',
-        [{ text: 'OK' }]
-      );
+      Alert.alert('Permission requise', 'Sur cette version d\'Android, la localisation est nécessaire pour scanner les cibles Bluetooth.');
       return false;
     }
-
-    if (Platform.OS === 'android' && Platform.Version >= 31) {
-      const btScan    = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN);
-      const btConnect = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT);
-      if (btScan !== 'granted' || btConnect !== 'granted') {
-        Alert.alert('Permission Bluetooth requise', 'Autorisez le Bluetooth pour scanner les cibles.');
-        return false;
-      }
-    }
-
     return true;
   } catch (e) {
     console.log('Permission error:', e);
     return false;
   }
+}
+
+/** Attend que le Bluetooth du téléphone soit prêt (iOS met parfois une seconde au démarrage). */
+async function waitForBluetoothOn(timeoutMs = 6000): Promise<boolean> {
+  try {
+    if ((await BleManager.state()) === 'PoweredOn') return true;
+  } catch {}
+  return new Promise(resolve => {
+    let done = false;
+    const sub = BleManager.onStateChange((state: string) => {
+      if (state === 'PoweredOn' && !done) { done = true; sub.remove(); resolve(true); }
+    }, true);
+    setTimeout(() => { if (!done) { done = true; sub.remove(); resolve(false); } }, timeoutMs);
+  });
 }
 
 // ─── Vérification du jeton d'appairage par l'API ───
@@ -156,6 +168,11 @@ export async function scanForTargets(
   if (isBLEAvailable() && hasPermission) {
     // Scan BLE réel
     try {
+      if (!(await waitForBluetoothOn())) {
+        Alert.alert('Bluetooth désactivé', 'Active le Bluetooth du téléphone puis relance le scan.');
+        onScanComplete();
+        return;
+      }
       const foundDevices = new Set<string>();
 
       BleManager.startDeviceScan(null, { allowDuplicates: false }, (error: any, device: any) => {
@@ -225,7 +242,9 @@ export async function connectToTarget(
       // 1. Connexion BLE
       // MTU : par défaut Android ne transporte que 20 octets par notification, or le JSON
       // d'un impact en fait ~150 → on demande 247 octets (iOS négocie seul, l'option est ignorée)
-      await BleManager.connectToDevice(targetId, { requestMTU: 247, timeout: 15000 });
+      if (!(await BleManager.isDeviceConnected(targetId).catch(() => false))) {
+        await BleManager.connectToDevice(targetId, { requestMTU: 247, timeout: 15000 });
+      }
       await BleManager.discoverAllServicesAndCharacteristicsForDevice(targetId);
 
       // 2. Jeton d'appairage lu sur la cible (prouve que c'est bien un module FootUp)
@@ -274,7 +293,7 @@ export async function connectToTarget(
       await BleManager.cancelDeviceConnection(targetId).catch(() => {});
       Alert.alert(
         'Connexion impossible',
-        `${e?.message || e}\n\nVérifie que la cible n'est pas déjà connectée à un autre téléphone ou à nRF Connect, puis réessaie.`,
+        `${e?.message || e}\n\nVérifie que la cible est allumée et qu'elle n'est pas déjà utilisée par un autre téléphone, puis réessaie.`,
       );
       onStateChange?.(targetId, 'disconnected');
       return false;
