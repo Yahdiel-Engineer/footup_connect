@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "593628659393",
+    "project_id": "footup-256cf",
+    "storage_bucket": "footup-256cf.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:593628659393:android:7486ce005b8b3a8a5e9e40",
+        "android_client_info": {
+          "package_name": "com.drillergram.footup"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDU2mJEYb0ttjUeYcJ8qbJ9YpksXUwz2Hs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
